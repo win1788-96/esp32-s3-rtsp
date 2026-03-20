@@ -16,6 +16,12 @@ const char* NTP_SERVER = "pool.ntp.org";
 const long  GMT_OFFSET_SEC = 28800; // 台灣時區 UTC+8
 const int   DAYLIGHT_OFFSET_SEC = 0;
 
+// --- 相機畫質與效能設定 ---
+framesize_t CAM_FRAMESIZE = FRAMESIZE_SVGA;  // 尺寸：可選 FRAMESIZE_VGA (640x480), FRAMESIZE_SVGA (800x600), FRAMESIZE_HD (1280x720) 等
+int CAM_JPEG_QUALITY = 10;                   // 畫質：數字越小畫質越好 (範圍 0-63)，建議 10~15
+int CAM_BRIGHTNESS = 0;                      // 亮度：範圍 -2 到 +2
+uint32_t CAM_TARGET_FPS = 15;                // 即時串流目標張數 (FPS)：預設 15
+
 // Web 設定介面與 RTSP Server
 WebServer webServer(80);
 WiFiServer rtspServer(554);
@@ -51,18 +57,18 @@ void setupCamera() {
     config.pin_reset = RESET_GPIO_NUM;
     config.xclk_freq_hz = 20000000;
     
-    // 串流頻寬控制：解析度設為 SVGA (800x600) 以維持良好幀率
-    config.frame_size = FRAMESIZE_SVGA; 
+    // 串流頻寬控制：解析度與畫質由全域變數控制
+    config.frame_size = CAM_FRAMESIZE; 
     config.pixel_format = PIXFORMAT_JPEG;
     
     // 利用 ESP32S3 的 PSRAM 進行雙緩衝，提升雙核效能與避免影像撕裂
     if (psramFound()) {
-        config.jpeg_quality = 10;
+        config.jpeg_quality = CAM_JPEG_QUALITY;
         config.fb_count = 2; // 開啟雙幀緩衝
         config.grab_mode = CAMERA_GRAB_LATEST; 
         Serial.println("[相機日誌] 偵測到 PSRAM！已啟用雙幀緩衝 (Double Buffering) 與高畫質設定。");
     } else {
-        config.jpeg_quality = 12;
+        config.jpeg_quality = (CAM_JPEG_QUALITY < 12) ? 12 : CAM_JPEG_QUALITY; // 避免無 PSRAM 時記憶體不足
         config.fb_count = 1;
         config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
         Serial.println("[相機日誌] ⚠️ 未偵測到 PSRAM，使用單幀緩衝與一般畫質。");
@@ -80,7 +86,36 @@ void setupCamera() {
         Serial.printf("[相機日誌] ❌ 相機初始化失敗！錯誤碼: 0x%x\n", err);
         return;
     }
+    
+    // 更新感光元件額外設定 (如亮度)
+    sensor_t * s = esp_camera_sensor_get();
+    if (s != NULL) {
+        s->set_brightness(s, CAM_BRIGHTNESS);
+    }
+    
     Serial.println("[相機日誌] ✅ 相機初始化成功！");
+}
+
+// 取得當前設定的長寬，供 RTSP 描述格式使用
+int getCamWidth() {
+    switch(CAM_FRAMESIZE) {
+        case FRAMESIZE_VGA: return 640;
+        case FRAMESIZE_SVGA: return 800;
+        case FRAMESIZE_XGA: return 1024;
+        case FRAMESIZE_HD: return 1280;
+        case FRAMESIZE_UXGA: return 1600;
+        default: return 800;
+    }
+}
+int getCamHeight() {
+    switch(CAM_FRAMESIZE) {
+        case FRAMESIZE_VGA: return 480;
+        case FRAMESIZE_SVGA: return 600;
+        case FRAMESIZE_XGA: return 768;
+        case FRAMESIZE_HD: return 720;
+        case FRAMESIZE_UXGA: return 1200;
+        default: return 600;
+    }
 }
 
 // =======================================================
@@ -88,7 +123,7 @@ void setupCamera() {
 // 將相機截取與網路串流放於獨立核心，不干擾 Core 1 的系統與Web
 // =======================================================
 void rtspTask(void * pvParameters) {
-    uint32_t msecPerFrame = 1000 / 15; // 目標幀率 15 FPS
+    uint32_t msecPerFrame = 1000 / CAM_TARGET_FPS; // 動態對應使用者設定的 FPS
     Serial.println("[RTSP 任務] ✅ RTSP 守護行程已於 Core 0 成功啟動，等待連線...");
     
     while (true) {
@@ -115,8 +150,8 @@ void rtspTask(void * pvParameters) {
             // 為新客戶端建立串流器與會話
             Serial.println("[RTSP 日誌] 🛠️ 正在為新用戶建立串流會話 (RTSP Session)...");
             
-            // OV2640Streamer 我們已改寫成直接取得鏡頭 Frame，並在此填入 SVGA 的寬高 (800x600)
-            streamer = new OV2640Streamer(800, 600);
+            // OV2640Streamer 依據上方全域變數動態套用寬高
+            streamer = new OV2640Streamer(getCamWidth(), getCamHeight());
             // CRtspSession 需要 SOCKET 型別 (ESP32 上為 WiFiClient*)
             session = new CRtspSession(&rtspClient, streamer);
             Serial.println("[RTSP 日誌] ▶️ 串流準備就緒，開始接收客戶端握手協議！");
@@ -194,7 +229,8 @@ void handleRoot() {
     html += "</head><body>";
     html += "<h1>XIAO ESP32S3 Sense RTSP 串流中心</h1>";
     html += "<h3>系統狀態: <span style='color: green;'>執行中</span></h3>";
-    html += "<p><b>解析度:</b> SVGA (800x600) &nbsp; | &nbsp; <b>FPS:</b> 約 15 fps</p>";
+    html += "<p><b>自訂畫質:</b> " + String(CAM_JPEG_QUALITY) + " (越小越清晰) &nbsp; | &nbsp; <b>亮度:</b> " + String(CAM_BRIGHTNESS) + "</p>";
+    html += "<p><b>解析度:</b> " + String(getCamWidth()) + "x" + String(getCamHeight()) + " &nbsp; | &nbsp; <b>目標 FPS:</b> 約 " + String(CAM_TARGET_FPS) + " fps</p>";
     html += "<p><b>RTSP 網址:</b> <code>rtsp://" + WiFi.localIP().toString() + ":554/mjpeg/1</code></p>";
     
     html += "<h3>📸 相機即時快照驗證</h3>";
