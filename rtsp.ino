@@ -184,6 +184,43 @@ void rtspTask(void * pvParameters) {
     }
 }
 
+// 儲存 WebUI 傳來的更新設定
+void handleSetting() {
+    Serial.println("[Web 日誌] ⚙️ 接收到系統設定變更請求 (/setting)");
+    
+    sensor_t * s = esp_camera_sensor_get();
+    if (!s) {
+        webServer.send(500, "text/plain", "Camera sensor not found");
+        return;
+    }
+
+    if (webServer.hasArg("framesize")) {
+        int val = webServer.arg("framesize").toInt();
+        CAM_FRAMESIZE = (framesize_t)val;
+        s->set_framesize(s, CAM_FRAMESIZE);
+        Serial.printf("[設定日誌] 變更解析度為 (ID): %d\n", val);
+    }
+    if (webServer.hasArg("quality")) {
+        CAM_JPEG_QUALITY = webServer.arg("quality").toInt();
+        s->set_quality(s, CAM_JPEG_QUALITY);
+        Serial.printf("[設定日誌] 變更畫質為: %d\n", CAM_JPEG_QUALITY);
+    }
+    if (webServer.hasArg("brightness")) {
+        CAM_BRIGHTNESS = webServer.arg("brightness").toInt();
+        s->set_brightness(s, CAM_BRIGHTNESS);
+        Serial.printf("[設定日誌] 變更亮度為: %d\n", CAM_BRIGHTNESS);
+    }
+    if (webServer.hasArg("fps")) {
+        CAM_TARGET_FPS = webServer.arg("fps").toInt();
+        if (CAM_TARGET_FPS < 1) CAM_TARGET_FPS = 1;
+        Serial.printf("[設定日誌] 變更目標 FPS 為: %d\n", CAM_TARGET_FPS);
+    }
+    
+    // 套用完畢後，將網頁重新導向回首頁
+    webServer.sendHeader("Location", "/");
+    webServer.send(303);
+}
+
 // 擷取單張相片以供 WebUI 驗證
 void handleCapture() {
     Serial.println("[Web 日誌] 📷 接收到相片擷取請求 (/capture)");
@@ -214,6 +251,13 @@ void handleRoot() {
     html += ".btn{background-color: #4CAF50; color: white; padding: 12px 24px; font-size: 16px; border: none; border-radius: 5px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: 0.3s;} ";
     html += ".btn:hover{background-color: #45a049;} ";
     html += ".btn:active{background-color: #3e8e41; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transform: translateY(2px);} ";
+    html += ".btn-save{background-color: #2196F3; margin-top: 15px;} .btn-save:hover{background-color: #0b7dda;} ";
+    html += ".settings-box{background: white; padding: 25px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); margin-top: 20px; margin-bottom: 30px;} ";
+    html += ".setting-row{margin-bottom: 20px;} ";
+    html += ".setting-row label.title{font-weight: bold; display: block; margin-bottom: 8px; color: #555;} ";
+    html += ".radio-group{display: flex; gap: 15px; flex-wrap: wrap;} ";
+    html += ".radio-group label{font-weight: normal; cursor: pointer; background: #eee; padding: 8px 15px; border-radius: 5px; transition: 0.2s;} ";
+    html += ".radio-group label:hover{background: #ddd;} ";
     html += "</style>";
     html += "<script>";
     html += "function takePhoto() {";
@@ -228,10 +272,45 @@ void handleRoot() {
     html += "</script>";
     html += "</head><body>";
     html += "<h1>XIAO ESP32S3 Sense RTSP 串流中心</h1>";
-    html += "<h3>系統狀態: <span style='color: green;'>執行中</span></h3>";
-    html += "<p><b>自訂畫質:</b> " + String(CAM_JPEG_QUALITY) + " (越小越清晰) &nbsp; | &nbsp; <b>亮度:</b> " + String(CAM_BRIGHTNESS) + "</p>";
-    html += "<p><b>解析度:</b> " + String(getCamWidth()) + "x" + String(getCamHeight()) + " &nbsp; | &nbsp; <b>目標 FPS:</b> 約 " + String(CAM_TARGET_FPS) + " fps</p>";
-    html += "<p><b>RTSP 網址:</b> <code>rtsp://" + WiFi.localIP().toString() + ":554/mjpeg/1</code></p>";
+    html += "<p><b>伺服器狀態:</b> <span style='color: green;'>🟢 執行中</span> &nbsp; | &nbsp; <b>RTSP 網址:</b> <code>rtsp://" + WiFi.localIP().toString() + ":554/mjpeg/1</code></p>";
+    
+    // 設定表單區塊
+    html += "<div class='settings-box'>";
+    html += "<h3>⚙️ 系統即時設定</h3>";
+    html += "<form action='/setting' method='GET'>";
+    
+    // 畫質單選
+    html += "<div class='setting-row'><label class='title'>JPEG 畫質 (越小越銳利):</label><div class='radio-group'>";
+    html += "<label><input type='radio' name='quality' value='10' " + String(CAM_JPEG_QUALITY <= 10 ? "checked" : "") + "> 10 (極佳)</label>";
+    html += "<label><input type='radio' name='quality' value='15' " + String(CAM_JPEG_QUALITY == 15 ? "checked" : "") + "> 15 (平衡)</label>";
+    html += "<label><input type='radio' name='quality' value='30' " + String(CAM_JPEG_QUALITY >= 30 ? "checked" : "") + "> 30 (省流)</label>";
+    html += "</div></div>";
+    
+    // 亮度單選
+    html += "<div class='setting-row'><label class='title'>亮度補償:</label><div class='radio-group'>";
+    html += "<label><input type='radio' name='brightness' value='-2' " + String(CAM_BRIGHTNESS <= -2 ? "checked" : "") + "> -2 (偏暗)</label>";
+    html += "<label><input type='radio' name='brightness' value='0' " + String(CAM_BRIGHTNESS == 0 ? "checked" : "") + "> 0 (預設平衡)</label>";
+    html += "<label><input type='radio' name='brightness' value='1' " + String(CAM_BRIGHTNESS == 1 ? "checked" : "") + "> +1 (微亮)</label>";
+    html += "<label><input type='radio' name='brightness' value='2' " + String(CAM_BRIGHTNESS >= 2 ? "checked" : "") + "> +2 (極亮)</label>";
+    html += "</div></div>";
+    
+    // 解析度單選
+    html += "<div class='setting-row'><label class='title'>串流解析度:</label><div class='radio-group'>";
+    html += "<label><input type='radio' name='framesize' value='" + String(FRAMESIZE_VGA) + "' " + String(CAM_FRAMESIZE == FRAMESIZE_VGA ? "checked" : "") + "> VGA (640x480)</label>";
+    html += "<label><input type='radio' name='framesize' value='" + String(FRAMESIZE_SVGA) + "' " + String(CAM_FRAMESIZE == FRAMESIZE_SVGA ? "checked" : "") + "> SVGA (800x600)</label>";
+    html += "<label><input type='radio' name='framesize' value='" + String(FRAMESIZE_HD) + "' " + String(CAM_FRAMESIZE == FRAMESIZE_HD ? "checked" : "") + "> HD (1280x720)</label>";
+    html += "</div></div>";
+
+    // FPS 單選
+    html += "<div class='setting-row'><label class='title'>目標 FPS (串流幀率限制):</label><div class='radio-group'>";
+    html += "<label><input type='radio' name='fps' value='10' " + String(CAM_TARGET_FPS <= 10 ? "checked" : "") + "> 10 fps</label>";
+    html += "<label><input type='radio' name='fps' value='15' " + String(CAM_TARGET_FPS == 15 ? "checked" : "") + "> 15 fps</label>";
+    html += "<label><input type='radio' name='fps' value='25' " + String(CAM_TARGET_FPS >= 25 ? "checked" : "") + "> 25 fps</label>";
+    html += "</div></div>";
+
+    html += "<button type='submit' class='btn btn-save'>💾 套用並即時變更</button>";
+    html += "</form>";
+    html += "</div>";
     
     html += "<h3>📸 相機即時快照驗證</h3>";
     html += "<button id='capBtn' class='btn' onclick='takePhoto()'>📸 拍一張即時照片</button>";
@@ -285,6 +364,7 @@ void setup() {
     Serial.println("[系統日誌] 步驟 4: 啟動 Web 伺服器 (Port 80)...");
     webServer.on("/", HTTP_GET, handleRoot);
     webServer.on("/capture", HTTP_GET, handleCapture);
+    webServer.on("/setting", HTTP_GET, handleSetting);
     webServer.begin();
     Serial.println("[系統日誌] ✅ 網頁伺服器已就緒。");
 
